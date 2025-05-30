@@ -1,72 +1,50 @@
-use anchor_lang::prelude::*;
-use anchor_spl::token_interface::{transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked, CloseAccount, close_account};
-
-use crate::state::Escrow;
+use anchor_lang::{prelude::*, system_program::{Transfer, transfer}};
+use crate::state::VaultState;
 
 #[derive(Accounts)]
 pub struct Refund<'info> {
     #[account(mut)]
-    maker: Signer<'info>,
-    mint_a: InterfaceAccount<'info, Mint>,
+    pub maker: Signer<'info>,
+    
     #[account(
         mut,
-        associated_token::mint = mint_a,
-        associated_token::authority = maker,
+        seeds = [b"state", maker.key().as_ref()],
+        bump = 253,  // Use the stored bump
+        close = maker  // Close the state account and send rent to maker
     )]
-    maker_ata_a: InterfaceAccount<'info, TokenAccount>,
+    pub vault_state: Account<'info, VaultState>,
+    
     #[account(
         mut,
-        close = maker,
-        has_one = mint_a,
-        has_one = maker,
-        seeds = [b"escrow", maker.key().as_ref(), escrow.seed.to_le_bytes().as_ref()],
-        bump = escrow.bump,
+        seeds = [b"vault", vault_state.key().as_ref()],
+        bump = 255,  // Use the stored bump
     )]
-    pub escrow: Account<'info, Escrow>,
-    #[account(
-        mut,
-        associated_token::mint = mint_a,
-        associated_token::authority = escrow,
-    )]
-    vault: InterfaceAccount<'info, TokenAccount>,
-    token_program: Interface<'info, TokenInterface>,
-    system_program: Program<'info, System>,
+    pub vault: SystemAccount<'info>,
+    
+    pub system_program: Program<'info, System>,
 }
 
 impl<'info> Refund<'info> {
-    pub fn refund_and_close_vault(&mut self) -> Result<()> {
-        let signer_seeds: [&[&[u8]]; 1] = [&[
-            b"escrow",
-            self.maker.key.as_ref(),
-            &self.escrow.seed.to_le_bytes()[..],
-            &[self.escrow.bump]
-        ]];
-        
-        let cpi_program = self.token_program.to_account_info();
+    pub fn refund(&mut self) -> Result<()> {
+        let cpi_program = self.system_program.to_account_info();
 
-        let cpi_accounts = TransferChecked {
+        let cpi_accounts = Transfer {
             from: self.vault.to_account_info(),
-            to: self.maker_ata_a.to_account_info(),
-            mint: self.mint_a.to_account_info(),
-            authority: self.escrow.to_account_info(),
+            to: self.maker.to_account_info(),
         };
 
-        let cpi_context = CpiContext::new_with_signer(cpi_program, cpi_accounts, &signer_seeds);
+        let seeds = &[
+            b"vault",
+            self.vault_state.to_account_info().key.as_ref(),
+            &[self.vault_state.vault_bump],
+        ];
 
-        transfer_checked(cpi_context, self.vault.amount, self.mint_a.decimals)?;
+        let signer_seeds = &[&seeds[..]];
 
-        let cpi_program = self.token_program.to_account_info();
+        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer_seeds);
 
-        let cpi_accounts = CloseAccount {
-            account: self.vault.to_account_info(),
-            destination: self.maker.to_account_info(),
-            authority: self.escrow.to_account_info(),
-        };
+        transfer(cpi_ctx, self.vault.lamports())?;
 
-        let cpi_context = CpiContext::new_with_signer(cpi_program, cpi_accounts, &signer_seeds);
-
-        close_account(cpi_context)?;
-        
         Ok(())
     }
 }

@@ -5,15 +5,18 @@ mod instructions;
 
 use instructions::*;
 
-declare_id!("FircrADQ2wgGuvpm8qneNCfKM7o5zoHTWnDQxngpTQ3J");
+declare_id!("ChcCcJSxyzTF3FsragCsXbmhAi3uAR5JSKBtVs3d4bW6");
 
 #[program]
 pub mod anchor_escrow {
     use super::*;
 
-    pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
-        msg!("Greetings from: {:?}", ctx.program_id);
-        Ok(())
+    pub fn make(ctx: Context<Make>, seed: u64, deposit: u64, receive: u64) -> Result<()> {
+        ctx.accounts.init_escrow(seed, receive, &ctx.bumps)?;
+        ctx.accounts.deposit(deposit)
+    }
+    pub fn refund(ctx: Context<Refund>) -> Result<()> {
+        ctx.accounts.refund()
     }
 }
 
