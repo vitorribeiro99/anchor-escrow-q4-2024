@@ -1,27 +1,18 @@
-//Create context
+use std::str::FromStr;
 
-//Deposit tokens from taker to maker
+use anchor_lang::{prelude::*, solana_program::system_instruction::transfer, system_program::{transfer, Transfer}};
 
-//Transfer tokens from vault to taker
-
-//Close vault account
-
-use anchor_lang::prelude::*;
+use mpl_core::instructions::TransferV1CpiBuilder;
 
 use anchor_spl::{
-    associated_token::AssociatedToken,
     token_interface::{
         close_account, 
-        transfer_checked, 
-        Mint, 
-        TokenAccount, 
         TokenInterface, 
         CloseAccount, 
-        TransferChecked
     },
 };
 
-use crate::state::Escrow;
+use crate::state::{Escrow, VaultState};
 
 #[derive(Accounts)]
 pub struct Take<'info> {
@@ -29,22 +20,12 @@ pub struct Take<'info> {
     pub taker: Signer<'info>,
     #[account(mut)]
     pub maker: SystemAccount<'info>,
-    pub mint_b: InterfaceAccount<'info, Mint>,
-    #[account(
-        mut,
-        associated_token::mint = mint_b,
-        associated_token::authority = taker,
-        associated_token::token_program = token_program,
-    )]
-    pub taker_ata_b: Box<InterfaceAccount<'info, TokenAccount>>,
-    #[account(
-        init_if_needed,
-        payer = taker,
-        associated_token::mint = mint_b,
-        associated_token::authority = maker,
-        associated_token::token_program = token_program,
-    )]
-    pub maker_ata_b: Box<InterfaceAccount<'info, TokenAccount>>,
+    /// CHECK: This is verified by the CPI
+    #[account(mut)]
+    pub mint_b: UncheckedAccount<'info>,
+    /// CHECK: This is verified by the CPI
+    #[account(mut, address = Pubkey::from_str("").unwrap())]
+    pub collection: UncheckedAccount<'info>,
     #[account(
         mut,
         close = maker,
@@ -54,47 +35,92 @@ pub struct Take<'info> {
         bump = escrow.bump
     )]
     escrow: Account<'info, Escrow>,
-    pub associated_token_program: Program<'info, AssociatedToken>,
+    #[account(
+        mut,
+        seeds = [b"state", maker.key().as_ref()],
+        bump = vault_state.state_bump,  
+        close = maker 
+    )]
+    pub vault_state: Account<'info, VaultState>,
+    #[account(
+        mut,
+        seeds = [b"vault", vault_state.key().as_ref()],
+        bump = vault_state.vault_bump,  
+    )]
+    pub vault: SystemAccount<'info>,
     pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
+    /// CHECK: This is the ID of the Metaplex Core program
+    #[account(address = mpl_core::ID)]
+    pub mpl_core_program: UncheckedAccount<'info>,
 }
 
 impl<'info> Take<'info> {
     pub fn deposit(&mut self) -> Result<()> {
-        let transfer_accounts = TransferChecked {
-            from: self.taker_ata_b.to_account_info(),
-            to: self.maker_ata_b.to_account_info(),
-            authority: self.taker.to_account_info(),
-            mint: self.mint_b.to_account_info(),
-        };
 
-        let cpi_ctx = CpiContext::new(self.token_program.to_account_info(), transfer_accounts);
+        let binding = self.mint_b.key();
+        let binding2 = self.escrow.key();
+        
+        let signer_seeds: [&[&[u8]]; 1] = [&[
+            binding2.as_ref(),
+            binding.as_ref(),
+        ]];
 
-        transfer_checked(cpi_ctx, self.escrow.receive, self.mint_b.decimals)
+        TransferV1CpiBuilder::new(&self.mpl_core_program.to_account_info())
+            .asset(&self.mint_b.to_account_info())
+            .authority(Some(&self.taker.to_account_info()))
+            .payer(&self.taker.to_account_info())
+            .new_owner(&self.escrow.to_account_info()) 
+            .collection(Some(&self.collection.to_account_info()))
+            .system_program(Some(&self.system_program.to_account_info()))
+            .invoke_signed(&signer_seeds)?;
+        Ok(())
     }
 
     pub fn withdraw_and_close_vault(&mut self) -> Result<()> {
+
+        let binding = self.mint_b.key();
+        let binding2 = self.escrow.key();
+        
+        let signer_seeds: [&[&[u8]]; 1] = [&[
+            binding2.as_ref(),
+            binding.as_ref(),
+        ]];
+
+        TransferV1CpiBuilder::new(&self.mpl_core_program.to_account_info())
+            .asset(&self.mint_b.to_account_info())
+            .authority(Some(&self.escrow.to_account_info()))
+            .payer(&self.taker.to_account_info())
+            .new_owner(&self.taker.to_account_info()) 
+            .collection(Some(&self.collection.to_account_info()))
+            .system_program(Some(&self.system_program.to_account_info()))
+            .invoke_signed(&signer_seeds)?;
+
+        let cpi_program = self.system_program.to_account_info();
+
+        let cpi_accounts = Transfer {
+            from: self.vault.to_account_info(),
+            to: self.taker.to_account_info(),
+        };
+
+        let seeds = &[
+            b"vault",
+            self.vault_state.to_account_info().key.as_ref(),
+            &[self.vault_state.vault_bump],
+        ];
+
+        let signer_seeds = &[&seeds[..]];
+
+        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer_seeds);
+
+        transfer(cpi_ctx, self.vault.lamports());
+
         let signer_seeds: [&[&[u8]]; 1] = [&[
             b"escrow",
             self.maker.to_account_info().key.as_ref(),
             &self.escrow.seed.to_le_bytes()[..],
             &[self.escrow.bump],
         ]];
-
-        let accounts = TransferChecked {
-            from: self.vault.to_account_info(),
-            to: self.taker_ata_a.to_account_info(),
-            authority: self.escrow.to_account_info(),
-            mint: self.mint_a.to_account_info(),
-        };
-
-        let ctx = CpiContext::new_with_signer(
-            self.token_program.to_account_info(),
-            accounts,
-            &signer_seeds,
-        );
-
-        transfer_checked(ctx, self.vault.amount, self.mint_a.decimals)?;
 
         let accounts = CloseAccount {
             account: self.vault.to_account_info(),

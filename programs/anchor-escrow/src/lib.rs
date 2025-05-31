@@ -5,7 +5,7 @@ mod instructions;
 
 use instructions::*;
 
-declare_id!("ChcCcJSxyzTF3FsragCsXbmhAi3uAR5JSKBtVs3d4bW6");
+declare_id!("6w198r96A5YKBqCfFP1TFU9dYk1kjY9wsQ7Tbphgm5s1");
 
 #[program]
 pub mod anchor_escrow {
@@ -18,7 +18,10 @@ pub mod anchor_escrow {
     pub fn refund(ctx: Context<Refund>) -> Result<()> {
         ctx.accounts.refund()
     }
+
+    pub fn take(ctx: Context<Take>) -> Result<()> {
+        ctx.accounts.deposit()?;
+        ctx.accounts.withdraw_and_close_vault()
+    }
 }
 
-#[derive(Accounts)]
-pub struct Initialize {}
